@@ -1,0 +1,16 @@
+[package]
+name = "bless"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.41"
+clap = {version="4.5.41", features=["derive"]}
+crossterm = "0.29.0"
+env_logger = "0.11.8"
+log = "0.4.27"
+polars = "0.49.1"
+polars-io = {version="0.49.1", features=["ipc"]}
+polars-lazy = {version="0.49.1"}
+polars-sql = "0.49.1"
+ratatui = "0.29.0"
