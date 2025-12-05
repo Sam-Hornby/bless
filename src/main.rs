@@ -42,19 +42,11 @@ struct DataFrameModel {
     total_num_columns: i64,
 }
 
-struct CsvModel {
-    data_frame_model: DataFrameModel,
-}
-
-struct IpcModel {
-    data_frame_model: DataFrameModel,
-}
-
 struct Hdf5Model {}
 
 enum TableModel {
-    Csv(CsvModel),
-    Ipc(IpcModel),
+    Csv(DataFrameModel),
+    Ipc(DataFrameModel),
     Hdf5(Hdf5Model),
 }
 
@@ -127,20 +119,18 @@ fn create_data_frame_model(whole_frame: LazyFrame) -> Result<DataFrameModel, Str
     })
 }
 
-fn create_csv_model(file: &PathBuf) -> Result<CsvModel, String> {
+fn create_csv_model(file: &PathBuf) -> Result<DataFrameModel, String> {
     let csv_reader = CsvReadOptions::default()
             .try_into_reader_with_file_path(Some(file.clone()))
             .map_err(convert_polars_error)?;
     let df = csv_reader.finish().map_err(convert_polars_error)?;
-    let data_frame_model = create_data_frame_model(df.lazy())?;
-    Ok(CsvModel{data_frame_model: data_frame_model})
+    create_data_frame_model(df.lazy())
 }
 
-fn create_ipc_model(file: &PathBuf) -> Result<IpcModel, String> {
+fn create_ipc_model(file: &PathBuf) -> Result<DataFrameModel, String> {
     let stream = File::open(file).map_err(convert_to_display_error)?;
     let df = IpcReader::new(stream).finish().map_err(convert_polars_error)?;
-    let data_frame_model = create_data_frame_model(df.lazy())?;
-    Ok(IpcModel{data_frame_model: data_frame_model})
+    create_data_frame_model(df.lazy())
 }
 
 #[derive(Parser)]
@@ -182,8 +172,8 @@ fn data_frame_scroll(model: &mut DataFrameModel, increment: ScrollIncrement) -> 
 
 fn scroll_update_state(model: &mut DataModel, increment: ScrollIncrement) -> Result<(), String> {
     match &mut model.table_model {
-        TableModel::Csv(csv) => data_frame_scroll(&mut csv.data_frame_model, increment),
-        TableModel::Ipc(ipc) => data_frame_scroll(&mut ipc.data_frame_model, increment),
+        TableModel::Csv(csv) => data_frame_scroll(csv, increment),
+        TableModel::Ipc(ipc) => data_frame_scroll(ipc, increment),
         TableModel::Hdf5(_) => Err(format!("Scroll not implemented for hdf5")),
     }
 }
@@ -263,8 +253,8 @@ fn data_frame_search(model: &mut DataFrameModel, search_string: &str, action: &A
 
  fn execute_search(model: &mut TableModel, search_string: &str, action: &Action) -> Result<(), String> {
     match model {
-        TableModel::Csv(csv) => data_frame_search(&mut csv.data_frame_model, search_string, action),
-        TableModel::Ipc(ipc) => data_frame_search(&mut ipc.data_frame_model, search_string, action),
+        TableModel::Csv(csv) => data_frame_search(csv, search_string, action),
+        TableModel::Ipc(ipc) => data_frame_search(ipc, search_string, action),
         TableModel::Hdf5(_) => Err(format!("Search not implemented for hdf5")),
     }
  }
@@ -279,8 +269,8 @@ fn data_frame_search(model: &mut DataFrameModel, search_string: &str, action: &A
 
  fn execute_command(model: &mut DataModel, command_string: &str) -> Result<(), String> {
     match &mut model.table_model {
-        TableModel::Csv(csv) => execute_command_on_data_frame(&mut csv.data_frame_model, command_string),
-        TableModel::Ipc(ipc) => execute_command_on_data_frame(&mut ipc.data_frame_model, command_string),
+        TableModel::Csv(csv) => execute_command_on_data_frame(csv, command_string),
+        TableModel::Ipc(ipc) => execute_command_on_data_frame(ipc, command_string),
         TableModel::Hdf5(_) => Err(format!("Command Execution not supported for hdf5")),
     }?;
     model.user_model = UserModel::DefaultMode;
@@ -444,7 +434,7 @@ fn log_action(action: &Action, log_file: &mut Option<File>) -> Result<(), String
 }
 
 
-fn create_command_paragraph(model: &DataModel) -> Result<Paragraph, String> {
+fn create_command_paragraph(model: &DataModel) -> Result<Paragraph<'_>, String> {
     let text = match &model.user_model {
         UserModel::DefaultMode => Line::from("..."),
         UserModel::SearchMode(search_model) => match search_model {
@@ -554,8 +544,8 @@ fn render_data_frame_table(model: &DataFrameModel, area: &Rect, frame: &mut Fram
 
 fn render_table(model: &DataModel, area: &Rect, frame: &mut Frame, tui_state: &mut TuiState) -> Result<(), String> {
     match &model.table_model {
-        TableModel::Csv(csv) => render_data_frame_table(&csv.data_frame_model, area, frame, tui_state),
-        TableModel::Ipc(ipc) => render_data_frame_table(&ipc.data_frame_model, area, frame, tui_state),
+        TableModel::Csv(csv) => render_data_frame_table(csv, area, frame, tui_state),
+        TableModel::Ipc(ipc) => render_data_frame_table(ipc, area, frame, tui_state),
         TableModel::Hdf5(_) => Err(format!("HDF5 rendering not yet implemented")),
     }
 }
@@ -611,8 +601,8 @@ fn get_lazy_frame_total_rows(lf: LazyFrame) -> usize {
 
 fn get_total_rows(model: &DataModel) -> usize {
     match &model.table_model {
-        TableModel::Csv(csv) => get_lazy_frame_total_rows(csv.data_frame_model.current_frame.clone()),
-        TableModel::Ipc(ipc) => get_lazy_frame_total_rows(ipc.data_frame_model.current_frame.clone()),
+        TableModel::Csv(csv) => get_lazy_frame_total_rows(csv.current_frame.clone()),
+        TableModel::Ipc(ipc) => get_lazy_frame_total_rows(ipc.current_frame.clone()),
         TableModel::Hdf5(_) => 0,
     }
 }
@@ -666,7 +656,7 @@ fn main() -> Result<(), String> {
     };
     let final_result = run_loop(&mut terminal, &mut tui_state, &mut model, &mut log_file);
     ratatui::restore();
-    return final_result;
+    final_result
 }
 
 
