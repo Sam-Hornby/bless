@@ -5,7 +5,7 @@ use ratatui::widgets::{Table, TableState, Row, Paragraph, Scrollbar, ScrollbarSt
 use ratatui::text::{Line, Text};
 use ratatui::layout::{Constraint, Rect, Margin};
 use ratatui::style::Color;
-use clap::Parser;
+use clap::{Parser};
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::Write;
@@ -158,9 +158,47 @@ struct Cli {
     log_dir: Option<PathBuf>,
 }
 
+fn create_table_model_from_unknowwn_file_type(input_file: &PathBuf) -> Result<TableModel, String> {
+    let mut error_string : String = "Couldn't load via any known file types! Errors were:".to_owned();
+    match create_ipc_model(input_file) {
+        Ok(model) => { return Ok(TableModel::Ipc(model)); },
+        Err(e) => {
+            error_string.push_str("\n  ");
+            error_string.push_str(&e);
+        }
+    }
+
+    match create_parquet_model(input_file) {
+        Ok(model) => { return Ok(TableModel::Parquet(model)); },
+        Err(e) => {
+            error_string.push_str("\n  ");
+            error_string.push_str(&e);
+        }
+    }
+
+    match create_ipc_stream_model(input_file) {
+        Ok(model) => { return Ok(TableModel::IpcStream(model)); },
+        Err(e) => {
+            error_string.push_str("\n  ");
+            error_string.push_str(&e);
+        }
+    }
+
+    match create_csv_model(input_file) {
+        Ok(model) => { return Ok(TableModel::Csv(model)); },
+        Err(e) => {
+            error_string.push_str("\n  ");
+            error_string.push_str(&e);
+        }
+    }
+
+    error_string.push_str("\n");
+    Err(error_string)
+}
+
 fn create_table_model(input_file: &PathBuf, file_type: &Option<String>) -> Result<TableModel, String> {
     match file_type {
-        None => Err("Auto detecting file type not implemented yet".to_string()),
+        None => create_table_model_from_unknowwn_file_type(input_file),
         Some(file_type) => match file_type.to_lowercase().as_str() {
             "csv" => Ok(TableModel::Csv(create_csv_model(input_file)?)),
             "ipc" => Ok(TableModel::Ipc(create_ipc_model(input_file)?)),
@@ -722,7 +760,7 @@ mod tests {
             .with_separator(b',')
             .finish(&mut test_df).map_err(convert_polars_error)?;
 
-        let file_type = Some("csv".to_string());
+        let mut file_type = Some("csv".to_string());
         let table_model = create_table_model(&output_path,  &file_type)?;
 
         let data_model = match &table_model {
@@ -732,6 +770,17 @@ mod tests {
 
         assert_eq!(data_model.total_num_rows, 3);
         assert_eq!(data_model.total_num_columns, 3);
+
+        file_type = None;
+        let unkownn_model = create_table_model(&output_path, &file_type)?;
+        let unknown_data_model = match &unkownn_model {
+            TableModel::Csv(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(unknown_data_model.total_num_rows, 3);
+        assert_eq!(unknown_data_model.total_num_columns, 3);
+
 
         Ok(())
     }
@@ -747,7 +796,7 @@ mod tests {
         IpcWriter::new(&mut file)
             .finish(&mut test_df).map_err(convert_polars_error)?;
 
-        let file_type = Some("ipc".to_string());
+        let mut file_type = Some("ipc".to_string());
         let table_model = create_table_model(&output_path,  &file_type)?;
 
         let data_model = match &table_model {
@@ -757,6 +806,16 @@ mod tests {
 
         assert_eq!(data_model.total_num_rows, 3);
         assert_eq!(data_model.total_num_columns, 3);
+
+        file_type = None;
+        let unkownn_model = create_table_model(&output_path, &file_type)?;
+        let unknown_data_model = match &unkownn_model {
+            TableModel::Ipc(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(unknown_data_model.total_num_rows, 3);
+        assert_eq!(unknown_data_model.total_num_columns, 3);
 
         Ok(())
     }
@@ -771,7 +830,7 @@ mod tests {
         ParquetWriter::new(&mut file)
             .finish(&mut test_df).map_err(convert_polars_error)?;
 
-        let file_type = Some("parquet".to_string());
+        let mut file_type = Some("parquet".to_string());
         let table_model = create_table_model(&output_path,  &file_type)?;
 
         let data_model = match &table_model {
@@ -781,6 +840,16 @@ mod tests {
 
         assert_eq!(data_model.total_num_rows, 3);
         assert_eq!(data_model.total_num_columns, 3);
+
+        file_type = None;
+        let unkownn_model = create_table_model(&output_path, &file_type)?;
+        let unknown_data_model = match &unkownn_model {
+            TableModel::Parquet(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(unknown_data_model.total_num_rows, 3);
+        assert_eq!(unknown_data_model.total_num_columns, 3);
 
         Ok(())
     }
@@ -795,7 +864,7 @@ mod tests {
         IpcStreamWriter::new(&mut file)
             .finish(&mut test_df).map_err(convert_polars_error)?;
 
-        let file_type = Some("ipc_stream".to_string());
+        let mut file_type = Some("ipc_stream".to_string());
         let table_model = create_table_model(&output_path,  &file_type)?;
 
         let data_model = match &table_model {
@@ -805,6 +874,16 @@ mod tests {
 
         assert_eq!(data_model.total_num_rows, 3);
         assert_eq!(data_model.total_num_columns, 3);
+
+        file_type = None;
+        let unkownn_model = create_table_model(&output_path, &file_type)?;
+        let unknown_data_model = match &unkownn_model {
+            TableModel::IpcStream(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(unknown_data_model.total_num_rows, 3);
+        assert_eq!(unknown_data_model.total_num_columns, 3);
 
         Ok(())
     }
