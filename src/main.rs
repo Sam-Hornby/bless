@@ -19,6 +19,8 @@ use log::{debug, LevelFilter};
 use chrono::Local;
 use std::cmp;
 use polars_io::ipc::IpcReader;
+use polars_io::ipc::IpcStreamReader;
+use polars_io::prelude::ParquetReader;
 use polars_sql::SQLContext;
 
 // Structs, Enums, Data
@@ -47,6 +49,8 @@ struct Hdf5Model {}
 enum TableModel {
     Csv(DataFrameModel),
     Ipc(DataFrameModel),
+    Parquet(DataFrameModel),
+    IpcStream(DataFrameModel),
     Hdf5(Hdf5Model),
 }
 
@@ -133,6 +137,18 @@ fn create_ipc_model(file: &PathBuf) -> Result<DataFrameModel, String> {
     create_data_frame_model(df.lazy())
 }
 
+fn create_parquet_model(file: &PathBuf) -> Result<DataFrameModel, String> {
+    let stream = File::open(file).map_err(convert_to_display_error)?;
+    let df = ParquetReader::new(stream).finish().map_err(convert_polars_error)?;
+    create_data_frame_model(df.lazy())
+}
+
+fn create_ipc_stream_model(file: &PathBuf) -> Result<DataFrameModel, String> {
+    let stream = File::open(file).map_err(convert_to_display_error)?;
+    let df = IpcStreamReader::new(stream).finish().map_err(convert_polars_error)?;
+    create_data_frame_model(df.lazy())
+}
+
 #[derive(Parser)]
 struct Cli {
     input_file: PathBuf,
@@ -142,16 +158,22 @@ struct Cli {
     log_dir: Option<PathBuf>,
 }
 
-fn create_model(cli: &Cli) -> Result<DataModel, String> {
-    let table_model = match &cli.file_type {
-        None => Err("Auto detecting file type not implemented yet"),
+fn create_table_model(input_file: &PathBuf, file_type: &Option<String>) -> Result<TableModel, String> {
+    match file_type {
+        None => Err("Auto detecting file type not implemented yet".to_string()),
         Some(file_type) => match file_type.to_lowercase().as_str() {
-            "csv" => Ok(TableModel::Csv(create_csv_model(&cli.input_file)?)),
-            "ipc" => Ok(TableModel::Ipc(create_ipc_model(&cli.input_file)?)),
+            "csv" => Ok(TableModel::Csv(create_csv_model(input_file)?)),
+            "ipc" => Ok(TableModel::Ipc(create_ipc_model(input_file)?)),
+            "parquet" => Ok(TableModel::Parquet(create_parquet_model(input_file)?)),
+            "ipc_stream" => Ok(TableModel::IpcStream(create_ipc_stream_model(input_file)?)),
             "hdf5" => Ok(TableModel::Hdf5(Hdf5Model{})),
-            _ => Err("Unsupported file type"),
+            _ => Err("Unsupported file type".to_string()),
         }
-    }?;
+    }
+}
+
+fn create_model(cli: &Cli) -> Result<DataModel, String> {
+    let table_model = create_table_model(&cli.input_file, &cli.file_type)?;
     Ok(DataModel{
         user_model: UserModel::DefaultMode,
         table_model: table_model,
@@ -174,6 +196,8 @@ fn scroll_update_state(model: &mut DataModel, increment: ScrollIncrement) -> Res
     match &mut model.table_model {
         TableModel::Csv(csv) => data_frame_scroll(csv, increment),
         TableModel::Ipc(ipc) => data_frame_scroll(ipc, increment),
+        TableModel::Parquet(parquet) => data_frame_scroll(parquet, increment),
+        TableModel::IpcStream(ipc) => data_frame_scroll(ipc, increment),
         TableModel::Hdf5(_) => Err(format!("Scroll not implemented for hdf5")),
     }
 }
@@ -255,6 +279,8 @@ fn data_frame_search(model: &mut DataFrameModel, search_string: &str, action: &A
     match model {
         TableModel::Csv(csv) => data_frame_search(csv, search_string, action),
         TableModel::Ipc(ipc) => data_frame_search(ipc, search_string, action),
+        TableModel::Parquet(parquet) => data_frame_search(parquet, search_string, action),
+        TableModel::IpcStream(ipc) => data_frame_search(ipc, search_string, action),
         TableModel::Hdf5(_) => Err(format!("Search not implemented for hdf5")),
     }
  }
@@ -271,6 +297,8 @@ fn data_frame_search(model: &mut DataFrameModel, search_string: &str, action: &A
     match &mut model.table_model {
         TableModel::Csv(csv) => execute_command_on_data_frame(csv, command_string),
         TableModel::Ipc(ipc) => execute_command_on_data_frame(ipc, command_string),
+        TableModel::Parquet(parquet) => execute_command_on_data_frame(parquet, command_string),
+        TableModel::IpcStream(ipc) => execute_command_on_data_frame(ipc, command_string),
         TableModel::Hdf5(_) => Err(format!("Command Execution not supported for hdf5")),
     }?;
     model.user_model = UserModel::DefaultMode;
@@ -546,6 +574,8 @@ fn render_table(model: &DataModel, area: &Rect, frame: &mut Frame, tui_state: &m
     match &model.table_model {
         TableModel::Csv(csv) => render_data_frame_table(csv, area, frame, tui_state),
         TableModel::Ipc(ipc) => render_data_frame_table(ipc, area, frame, tui_state),
+        TableModel::Parquet(parquet) => render_data_frame_table(parquet, area, frame, tui_state),
+        TableModel::IpcStream(ipc) => render_data_frame_table(ipc, area, frame, tui_state),
         TableModel::Hdf5(_) => Err(format!("HDF5 rendering not yet implemented")),
     }
 }
@@ -603,6 +633,8 @@ fn get_total_rows(model: &DataModel) -> usize {
     match &model.table_model {
         TableModel::Csv(csv) => get_lazy_frame_total_rows(csv.current_frame.clone()),
         TableModel::Ipc(ipc) => get_lazy_frame_total_rows(ipc.current_frame.clone()),
+        TableModel::Parquet(parquet) => get_lazy_frame_total_rows(parquet.current_frame.clone()),
+        TableModel::IpcStream(ipc) => get_lazy_frame_total_rows(ipc.current_frame.clone()),
         TableModel::Hdf5(_) => 0,
     }
 }
@@ -660,6 +692,123 @@ fn main() -> Result<(), String> {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polars::prelude::DataFrame;
+    use polars::df;
+    use polars_io::prelude::*;
+    use tempfile::NamedTempFile;
+    // use crate::convert_polars_error;
+
+    fn get_test_df() -> Result<DataFrame, String> {
+        let df = df! [
+            "column1" => [1, 2, 3],
+            "column2" => [4, 5, 6],
+            "column3" => [7, 8, 9]
+        ];
+        df.map_err(convert_polars_error)
+    }
+
+    #[test]
+    fn test_csv_load() -> Result<(), String> {
+        let mut test_df = get_test_df()?;
+
+        let mut file = NamedTempFile::new().map_err(convert_to_display_error)?;
+        let output_path = file.path().to_path_buf();
+
+        CsvWriter::new(&mut file)
+            .include_header(true)
+            .with_separator(b',')
+            .finish(&mut test_df).map_err(convert_polars_error)?;
+
+        let file_type = Some("csv".to_string());
+        let table_model = create_table_model(&output_path,  &file_type)?;
+
+        let data_model = match &table_model {
+            TableModel::Csv(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(data_model.total_num_rows, 3);
+        assert_eq!(data_model.total_num_columns, 3);
+
+        Ok(())
+    }
+
+
+    #[test]
+    fn test_ipc_load() -> Result<(), String> {
+        let mut test_df = get_test_df()?;
+
+        let mut file = NamedTempFile::new().map_err(convert_to_display_error)?;
+        let output_path = file.path().to_path_buf();
+
+        IpcWriter::new(&mut file)
+            .finish(&mut test_df).map_err(convert_polars_error)?;
+
+        let file_type = Some("ipc".to_string());
+        let table_model = create_table_model(&output_path,  &file_type)?;
+
+        let data_model = match &table_model {
+            TableModel::Ipc(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(data_model.total_num_rows, 3);
+        assert_eq!(data_model.total_num_columns, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parquet_load() -> Result<(), String> {
+        let mut test_df = get_test_df()?;
+
+        let mut file = NamedTempFile::new().map_err(convert_to_display_error)?;
+        let output_path = file.path().to_path_buf();
+
+        ParquetWriter::new(&mut file)
+            .finish(&mut test_df).map_err(convert_polars_error)?;
+
+        let file_type = Some("parquet".to_string());
+        let table_model = create_table_model(&output_path,  &file_type)?;
+
+        let data_model = match &table_model {
+            TableModel::Parquet(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(data_model.total_num_rows, 3);
+        assert_eq!(data_model.total_num_columns, 3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_ipc_stream_load() -> Result<(), String> {
+        let mut test_df = get_test_df()?;
+
+        let mut file = NamedTempFile::new().map_err(convert_to_display_error)?;
+        let output_path = file.path().to_path_buf();
+
+        IpcStreamWriter::new(&mut file)
+            .finish(&mut test_df).map_err(convert_polars_error)?;
+
+        let file_type = Some("ipc_stream".to_string());
+        let table_model = create_table_model(&output_path,  &file_type)?;
+
+        let data_model = match &table_model {
+            TableModel::IpcStream(csv) => Ok(csv),
+            _ => Err("Wrong file type".to_string()),
+        }?;
+
+        assert_eq!(data_model.total_num_rows, 3);
+        assert_eq!(data_model.total_num_columns, 3);
+
+        Ok(())
+    }
+}
 
 
 
