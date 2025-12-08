@@ -13,8 +13,6 @@ use polars::prelude::{CsvReadOptions, PolarsError, SerReader, DataType};
 use polars_lazy::prelude::{LazyFrame, len, col, any_horizontal, Expr, lit};
 use polars_lazy::frame::IntoLazy;
 use std::io::Error as IOError;
-use std::io::ErrorKind;
-use env_logger;
 use log::{debug, LevelFilter};
 use chrono::Local;
 use std::cmp;
@@ -62,9 +60,9 @@ enum SearchModel {
 
 #[derive(Debug)]
 enum UserModel {
-    DefaultMode,
-    SearchMode(SearchModel),
-    CommandMode(String),
+    Default,
+    Search(SearchModel),
+    Command(String),
 }
 
 struct DataModel {
@@ -123,10 +121,10 @@ fn create_data_frame_model(whole_frame: LazyFrame) -> Result<DataFrameModel, Str
     })
 }
 
-fn create_csv_model(file: &PathBuf) -> Result<DataFrameModel, String> {
+fn create_csv_model(file: &Path) -> Result<DataFrameModel, String> {
     let csv_reader = CsvReadOptions::default()
             .with_infer_schema_length(None)
-            .try_into_reader_with_file_path(Some(file.clone()))
+            .try_into_reader_with_file_path(Some(file.to_path_buf()))
             .map_err(convert_polars_error)?;
     let df = csv_reader.finish().map_err(convert_polars_error)?;
     create_data_frame_model(df.lazy())
@@ -193,7 +191,7 @@ fn create_table_model_from_unknowwn_file_type(input_file: &PathBuf) -> Result<Ta
         }
     }
 
-    error_string.push_str("\n");
+    error_string.push('\n');
     Err(error_string)
 }
 
@@ -214,8 +212,8 @@ fn create_table_model(input_file: &PathBuf, file_type: &Option<String>) -> Resul
 fn create_model(cli: &Cli) -> Result<DataModel, String> {
     let table_model = create_table_model(&cli.input_file, &cli.file_type)?;
     Ok(DataModel{
-        user_model: UserModel::DefaultMode,
-        table_model: table_model,
+        user_model: UserModel::Default,
+        table_model,
     })
 }
 
@@ -237,7 +235,7 @@ fn scroll_update_state(model: &mut DataModel, increment: ScrollIncrement) -> Res
         TableModel::Ipc(ipc) => data_frame_scroll(ipc, increment),
         TableModel::Parquet(parquet) => data_frame_scroll(parquet, increment),
         TableModel::IpcStream(ipc) => data_frame_scroll(ipc, increment),
-        TableModel::Hdf5(_) => Err(format!("Scroll not implemented for hdf5")),
+        TableModel::Hdf5(_) => Err("Scroll not implemented for hdf5".to_owned()),
     }
 }
 
@@ -320,7 +318,7 @@ fn data_frame_search(model: &mut DataFrameModel, search_string: &str, action: &A
         TableModel::Ipc(ipc) => data_frame_search(ipc, search_string, action),
         TableModel::Parquet(parquet) => data_frame_search(parquet, search_string, action),
         TableModel::IpcStream(ipc) => data_frame_search(ipc, search_string, action),
-        TableModel::Hdf5(_) => Err(format!("Search not implemented for hdf5")),
+        TableModel::Hdf5(_) => Err("Search not implemented for hdf5".to_owned()),
     }
  }
 
@@ -338,14 +336,14 @@ fn data_frame_search(model: &mut DataFrameModel, search_string: &str, action: &A
         TableModel::Ipc(ipc) => execute_command_on_data_frame(ipc, command_string),
         TableModel::Parquet(parquet) => execute_command_on_data_frame(parquet, command_string),
         TableModel::IpcStream(ipc) => execute_command_on_data_frame(ipc, command_string),
-        TableModel::Hdf5(_) => Err(format!("Command Execution not supported for hdf5")),
+        TableModel::Hdf5(_) => Err("Command Execution not supported for hdf5".to_owned()),
     }?;
-    model.user_model = UserModel::DefaultMode;
+    model.user_model = UserModel::Default;
     Ok(())
 }
 
 fn update_state(model: &mut DataModel, action: &Action) -> Result<(), String> {
-    return match action {
+    match action {
         Action::Quit => Ok(()),
         Action::Noop => Ok(()),
         Action::ScrollDown => scroll_update_state(model, ScrollIncrement{vertical_increment: 1, horizontal_increment: 0}),
@@ -353,66 +351,66 @@ fn update_state(model: &mut DataModel, action: &Action) -> Result<(), String> {
         Action::ScrollLeft => scroll_update_state(model, ScrollIncrement{vertical_increment: 0, horizontal_increment: -1}),
         Action::ScrollRight => scroll_update_state(model, ScrollIncrement{vertical_increment: 0, horizontal_increment: 1}),
         Action::SearchBegin => {
-            model.user_model = UserModel::SearchMode(SearchModel::SearchCreation(String::new()));
+            model.user_model = UserModel::Search(SearchModel::SearchCreation(String::new()));
             Ok(())
         },
         Action::SearchAddKey(c) => {
-            if let UserModel::SearchMode(ref mut search_model) = model.user_model {
+            if let UserModel::Search(ref mut search_model) = model.user_model {
                 if let SearchModel::SearchCreation(search_string) = search_model {
                     search_string.push(*c);
                     return Ok(());
                 }
-                return Err(format!("Invalid state for search add key"));
+                return Err("Invalid state for search add key".to_owned());
             }
-            return Err(format!("Invalid mode for search add key"));
+            Err("Invalid mode for search add key".to_owned())
         },
         Action::SearchRemoveKey => {
-            if let UserModel::SearchMode(ref mut search_model) = model.user_model {
+            if let UserModel::Search(ref mut search_model) = model.user_model {
                 if let SearchModel::SearchCreation(search_string) = search_model {
                     search_string.pop();
                     return Ok(());
                 }
-                return Err(format!("Invalid state for search remove key"));
+                return Err("Invalid state for search remove key".to_owned());
             }
-            return Err(format!("Invalid mode for search remove key"));
+            Err("Invalid mode for search remove key".to_owned())
         },
         Action::SearchUp | Action::SearchDown => {
-            if let UserModel::SearchMode(ref mut search_model) = model.user_model {
+            if let UserModel::Search(ref mut search_model) = model.user_model {
                 if let SearchModel::SearchCreation(search_string) = search_model.clone() {
                     *search_model = SearchModel::SearchInProgress(search_string);
                 }
                 if let SearchModel::SearchInProgress(search_string) = search_model {
-                    return execute_search(&mut model.table_model, search_string, &action);
+                    return execute_search(&mut model.table_model, search_string, action);
                 }
-                return Err(format!("Invalid state for search action"));
+                return Err("Invalid state for search action".to_owned());
             }
-            return Err(format!("Invalid mode for search action"));
+            Err("Invalid mode for search action".to_owned())
         },
         Action::SearchEnd => {
-            model.user_model = UserModel::DefaultMode;
+            model.user_model = UserModel::Default;
             Ok(())
         },
         Action::CommandBegin => {
-            model.user_model = UserModel::CommandMode(String::new());
+            model.user_model = UserModel::Command(String::new());
             Ok(())
         },
         Action::CommandAddKey(c) => {
-            if let UserModel::CommandMode(ref mut command_string) = model.user_model {
+            if let UserModel::Command(ref mut command_string) = model.user_model {
                 command_string.push(*c);
                 return Ok(());
             }
-            Err(format!("Invalid mode for CommandAddKey"))
+            Err("Invalid mode for CommandAddKey".to_owned())
         },
         Action::CommandRemoveKey => {
-            if let UserModel::CommandMode(ref mut command_string) = model.user_model {
+            if let UserModel::Command(ref mut command_string) = model.user_model {
                 command_string.pop();
                 return Ok(());
             }
-            Err(format!("Invalid model for CommandRemoveKey"))
+            Err("Invalid model for CommandRemoveKey".to_owned())
         },
-        Action::CommandExecute(command) => execute_command(model, &command),
+        Action::CommandExecute(command) => execute_command(model, command),
         Action::CommandEnd => {
-            model.user_model = UserModel::DefaultMode;
+            model.user_model = UserModel::Default;
             Ok(())
         },
 
@@ -469,10 +467,10 @@ fn get_search_action(key_event: &KeyEvent, search_model: &SearchModel) -> Result
     }
 }
 
-fn get_command_action(key_event: &KeyEvent, command: &String) -> Result<Action, String> {
+fn get_command_action(key_event: &KeyEvent, command: &str) -> Result<Action, String> {
     match key_event.code {
         KeyCode::Char(c) => Ok(Action::CommandAddKey(c)),
-        KeyCode::Enter => Ok(Action::CommandExecute(command.clone())),
+        KeyCode::Enter => Ok(Action::CommandExecute(command.to_string())),
         KeyCode::Esc => Ok(Action::CommandEnd),
         KeyCode::Backspace => Ok(Action::CommandRemoveKey),
         _ => get_default_mode_action(key_event),
@@ -487,9 +485,9 @@ fn get_table_action(data_model: &DataModel) -> Result<Action, String> {
         _ => { return Err(format!("Unsupported event {:?}", event)); }
     };
     match &data_model.user_model {
-        UserModel::DefaultMode => get_default_mode_action(&key_event),
-        UserModel::SearchMode(search_model) => get_search_action(&key_event, search_model),
-        UserModel::CommandMode(command) => get_command_action(&key_event, command),
+        UserModel::Default => get_default_mode_action(&key_event),
+        UserModel::Search(search_model) => get_search_action(&key_event, search_model),
+        UserModel::Command(command) => get_command_action(&key_event, command),
     }
 }
 
@@ -503,12 +501,12 @@ fn log_action(action: &Action, log_file: &mut Option<File>) -> Result<(), String
 
 fn create_command_paragraph(model: &DataModel) -> Result<Paragraph<'_>, String> {
     let text = match &model.user_model {
-        UserModel::DefaultMode => Line::from("..."),
-        UserModel::SearchMode(search_model) => match search_model {
+        UserModel::Default => Line::from("..."),
+        UserModel::Search(search_model) => match search_model {
             SearchModel::SearchCreation(search_string) => Line::from(format!("/{}", search_string)),
             SearchModel::SearchInProgress(search_string) => Line::from(format!("/{}", search_string)),
         },
-        UserModel::CommandMode(command_string) => Line::from(format!(":{}", command_string)),
+        UserModel::Command(command_string) => Line::from(format!(":{}", command_string)),
     };
     Ok(Paragraph::new(vec!(text)))
 }
@@ -516,8 +514,7 @@ fn create_command_paragraph(model: &DataModel) -> Result<Paragraph<'_>, String> 
 fn get_table_begin_row(model: &DataFrameModel, widget_height: i64) -> i64 {
     let result = model.current_position.row - (widget_height / 2);
     let result = cmp::min(result, model.total_num_rows - widget_height);
-    let result = cmp::max(result, 0);
-    result
+    cmp::max(result, 0)
 }
 
 fn render_data_frame_table(model: &DataFrameModel, area: &Rect, frame: &mut Frame, tui_state: &mut TuiState) -> Result<(), String> {
@@ -543,20 +540,20 @@ fn render_data_frame_table(model: &DataFrameModel, area: &Rect, frame: &mut Fram
                 .str().map_err(convert_polars_error)?;
             chunked_array.iter()
                 .map(|opt_str| {
-                    opt_str.ok_or(format!("Option not set"))
+                    opt_str.ok_or("Option not set".to_owned())
                         .map(|s| Text::from(s.to_string()))
                 }).collect::<Result<Vec<Text>, String>>()
         }).collect::<Result<Vec<Vec<Text>>, String>>()?;
 
-    if data_as_vector.len() == 0 {
-        return Err(format!("Empty data frame, cannot render table"));
+    if data_as_vector.is_empty() {
+        return Err("Empty data frame, cannot render table".to_owned());
     }
 
     let mut max_lengths: Vec<usize> = vec![];
     debug_assert!(num_cols == data_as_vector.len(), "Inconistent columns");
-    for i in 0..data_as_vector.len() {
-        debug_assert!(num_rows == data_as_vector[i].len(), "Inconsistent columns");
-        let max_len = data_as_vector[i].iter()
+    for (i, column_data) in data_as_vector.iter().enumerate() {
+        debug_assert!(num_rows == column_data.len(), "Inconsistent columns");
+        let max_len = column_data.iter()
             .map(|text| text.width())
             .max().unwrap() + 1;
         let col_name = schema.try_get_at_index(i).map_err(convert_polars_error)?;
@@ -567,11 +564,11 @@ fn render_data_frame_table(model: &DataFrameModel, area: &Rect, frame: &mut Fram
     let mut num_cols_can_fit = 1;
     let col_index = model.current_position.column as usize;
     let mut width_used = max_lengths[col_index];
-    for i in col_index..max_lengths.len() {
-        if width_used + max_lengths[i] > area.width as usize {
+    for max_length in max_lengths.iter().skip(col_index) {
+        if width_used + max_length > area.width as usize {
             break;
         }
-        width_used += max_lengths[i];
+        width_used += max_length;
         num_cols_can_fit += 1;
     }
 
@@ -615,7 +612,7 @@ fn render_table(model: &DataModel, area: &Rect, frame: &mut Frame, tui_state: &m
         TableModel::Ipc(ipc) => render_data_frame_table(ipc, area, frame, tui_state),
         TableModel::Parquet(parquet) => render_data_frame_table(parquet, area, frame, tui_state),
         TableModel::IpcStream(ipc) => render_data_frame_table(ipc, area, frame, tui_state),
-        TableModel::Hdf5(_) => Err(format!("HDF5 rendering not yet implemented")),
+        TableModel::Hdf5(_) => Err("HDF5 rendering not yet implemented".to_owned()),
     }
 }
 
@@ -635,7 +632,7 @@ fn draw_frame(terminal: &mut DefaultTerminal, tui_state: &mut TuiState, model: &
             width: area.width,
             height: 1,
         };
-        render_table(model, &table_area, frame, tui_state).map_err(|s| IOError::new(ErrorKind::Other, s))?;
+        render_table(model, &table_area, frame, tui_state).map_err(IOError::other)?;
         frame.render_widget(command_text, footer_area);
         Ok(())
     }).map_err(convert_to_display_error)?;
@@ -645,7 +642,7 @@ fn draw_frame(terminal: &mut DefaultTerminal, tui_state: &mut TuiState, model: &
 fn run_loop(terminal: &mut DefaultTerminal, tui: &mut TuiState, model: &mut DataModel, log_file: &mut Option<File>) -> Result<(), String> {
     loop {
         draw_frame(terminal, tui, model)?;
-        let action = get_table_action(&model)?;
+        let action = get_table_action(model)?;
         log_action(&action, log_file)?;
         match action {
             Action::Quit => break,
@@ -683,7 +680,7 @@ fn create_log_file(cli: &Cli) -> Result<Option<File>, String> {
         None => Ok(None),
         Some(log_dir) => {
             let log_file = log_dir.join(Path::new("actions_log.txt"));
-            File::create(&log_file).map(|x| Some(x)).map_err(convert_to_display_error)
+            File::create(&log_file).map(Some).map_err(convert_to_display_error)
         }
     }
 }
