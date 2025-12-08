@@ -125,6 +125,7 @@ fn create_data_frame_model(whole_frame: LazyFrame) -> Result<DataFrameModel, Str
 
 fn create_csv_model(file: &PathBuf) -> Result<DataFrameModel, String> {
     let csv_reader = CsvReadOptions::default()
+            .with_infer_schema_length(None)
             .try_into_reader_with_file_path(Some(file.clone()))
             .map_err(convert_polars_error)?;
     let df = csv_reader.finish().map_err(convert_polars_error)?;
